@@ -18,6 +18,9 @@ Outputs:
 import argparse
 import os
 import numpy as np
+import matplotlib
+# headless-friendly backend
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from transformers import AutoModel
 from scipy.linalg import svd
@@ -57,6 +60,20 @@ def magnitude_column_prune(W, keep):
     zero_mask = np.ones(W.shape[1], dtype=bool)
     zero_mask[keep_idx] = False
     Wp[:, zero_mask] = 0.0
+    return Wp, keep_idx
+
+def magnitude_row_prune(W, keep):
+    # keep rows (output channels)
+    n = W.shape[0]
+    keep = int(max(0, min(keep, n)))
+    if keep == 0:
+        return np.zeros_like(W), np.array([], dtype=int)
+    norms = np.linalg.norm(W, axis=1)
+    keep_idx = np.argsort(norms)[-keep:]
+    Wp = W.copy()
+    zero_mask = np.ones(W.shape[0], dtype=bool)
+    zero_mask[keep_idx] = False
+    Wp[zero_mask, :] = 0.0
     return Wp, keep_idx
 
 # ==============================
@@ -149,6 +166,7 @@ def main():
     parser.add_argument('--keep_ratio', type=float, default=0.3, help='Fraction of singular components to keep in experiment')
     parser.add_argument('--experiment_param', type=str, default='', help='(optional) exact parameter name to run experiment on')
     parser.add_argument('--seed', type=int, default=0, help='RNG seed for reproducibility')
+    parser.add_argument('--max_layers', type=int, default=200, help='Max 2D params to inspect')
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -161,38 +179,56 @@ def main():
     rows = []
     last_W = None
     last_name = None
+    count = 0
     for name, p in model.named_parameters():
         if p.ndim != 2:
             continue
+        count += 1
+        if args.max_layers and count > args.max_layers:
+            print(f"Reached max_layers limit ({args.max_layers}), stopping after {count-1} 2D params.")
+            break
         W = p.detach().cpu().numpy()
         n, m = W.shape
         print("Inspecting:", name, W.shape)
 
-        # local SVD predictor
+        # local SVD predictor (compute A/B and singular values)
         A, B, s = compute_local_svd_predictor(W, args.rank)
         W_svd = A @ B
         err_svd = rel_fro_error(W, W_svd)
 
-        # random rank (baseline) - use helper and scale to W's norm
-        Ar, Br = random_rank_AB(n, m, args.rank)
-        W_rand = Ar @ Br
-        norm_W = np.linalg.norm(W, 'fro')
-        norm_rand = np.linalg.norm(W_rand, 'fro')
-        if norm_rand > 0 and norm_W > 0:
-            W_rand = W_rand * (norm_W / norm_rand)
+        # random rank (baseline) - use random subset of W's singular components for a fair baseline
+        U_full, s_full, Vh_full = svd(W, full_matrices=False)
+        rng = np.random.default_rng(args.seed + count)
+        k_rand = min(args.rank, len(s_full))
+        if k_rand > 0:
+            idx = rng.permutation(len(s_full))[:k_rand]
+            W_rand = (U_full[:, idx] @ np.diag(s_full[idx]) @ Vh_full[idx, :])
+        else:
+            W_rand = np.zeros_like(W)
         err_rand_rank = rel_fro_error(W, W_rand)
 
-        # column pruning (use keep = args.rank)
+        # column & row magnitude pruning
         keep = min(args.rank, m)
-        W_mag_pruned, keep_idx = magnitude_column_prune(W, keep)
-        err_mag = rel_fro_error(W, W_mag_pruned)
+        W_mag_col, _ = magnitude_column_prune(W, keep)
+        err_mag_col = rel_fro_error(W, W_mag_col)
+        W_mag_row, _ = magnitude_row_prune(W, keep)
+        err_mag_row = rel_fro_error(W, W_mag_row)
+        err_mag_best = min(err_mag_col, err_mag_row)
+
+        # energy coverage for top-k singular values
+        energy_total = float(np.sum(s**2)) if s.size > 0 else 0.0
+        k = min(args.rank, len(s))
+        energy_k = float(np.sum(s[:k]**2) / energy_total) if energy_total > 0 else 0.0
 
         rows.append({
             'param': name,
             'shape': f"{n}x{m}",
             'svd_err': err_svd,
             'rand_rank_err': err_rand_rank,
-            'mag_col_err': err_mag,
+            'mag_col_err': err_mag_col,
+            'mag_row_err': err_mag_row,
+            'mag_best_err': err_mag_best,
+            'topk_energy': energy_k,
             'top_singular_values': ",".join([f"{x:.3e}" for x in s[:10]]),
         })
 
@@ -213,6 +249,13 @@ def main():
     df = pd.DataFrame(rows)
     df.to_csv(os.path.join(args.out_dir, 'layer_reconstruction.csv'), index=False)
     print("Saved results to", args.out_dir)
+
+    # summary statistics
+    if not df.empty:
+        cols = [c for c in ['svd_err','rand_rank_err','mag_best_err'] if c in df.columns]
+        if cols:
+            print("Mean errors:")
+            print(df[cols].mean().to_string())
 
     # Optionally run the experiment on a selected or last-inspected weight matrix
     if args.run_experiment and last_W is not None:
