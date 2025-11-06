@@ -11,7 +11,12 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+import matplotlib
+
+# headless-friendly backend and consistent dpi
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams["figure.dpi"] = 150
 
 from scipy.linalg import svd
 
@@ -45,12 +50,16 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
             # full SVD once per trial
             U, s, Vt = svd(W, full_matrices=False)
 
-            # SVD top-k (stored as factors)
+            # SVD top-k (stored as factors) - optimized without np.diag
             if k_eff > 0:
-                W_svd = (U[:, :k_eff] @ np.diag(s[:k_eff])) @ Vt[:k_eff, :]
+                W_svd = (U[:, :k_eff] * s[:k_eff]) @ Vt[:k_eff, :]
             else:
                 W_svd = np.zeros_like(W)
             svd_topk_err = rel_fro_error(W, W_svd)
+
+            # compute top-k explained energy
+            topk_energy = float(np.sum(s[:k_eff]**2) / np.sum(s**2)) if s.size else 0.0
+            k_ratio = float(k_eff) / float(min(n, m)) if min(n, m) > 0 else 0.0
 
             # random AB baseline (A@B scaled to W Frobenius)
             A = rng.normal(size=(n, k_eff)) if k_eff > 0 else np.zeros((n, 0))
@@ -65,7 +74,7 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
             # random subset of singular components (stronger random baseline)
             if k_eff > 0:
                 idx = rng.permutation(len(s))[:k_eff]
-                W_rand_svd_sub = (U[:, idx] @ np.diag(s[idx])) @ Vt[idx, :]
+                W_rand_svd_sub = (U[:, idx] * s[idx]) @ Vt[idx, :]
             else:
                 W_rand_svd_sub = np.zeros_like(W)
             rand_svd_subspace_err = rel_fro_error(W, W_rand_svd_sub)
@@ -88,8 +97,9 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
                 W_rand_colprune[:, mask2] = 0.0
                 random_colprune_err = rel_fro_error(W, W_rand_colprune)
             else:
-                svd_colprune_err = np.inf
-                random_colprune_err = np.inf
+                # prefer NaN to avoid contaminating mean/std
+                svd_colprune_err = np.nan
+                random_colprune_err = np.nan
 
             # budgets (store factors) and nnz for structured pruning
             params_svd_topk = params_for_factors(n, m, k_eff, include_singular_values=True)
@@ -103,14 +113,18 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
                 'm': int(m),
                 'rank_requested': int(k_in),
                 'rank_used': int(k_eff),
+                'k_ratio': float(k_ratio),
                 'svd_topk_err': float(svd_topk_err),
                 'random_AB_err': float(random_AB_err),
                 'rand_svd_subspace_err': float(rand_svd_subspace_err),
-                'svd_colprune_err': float(svd_colprune_err),
-                'random_colprune_err': float(random_colprune_err),
+                # align name with Phase B
+                'leverage_col_err': float(svd_colprune_err) if not np.isnan(svd_colprune_err) else np.nan,
+                # keep random_colprune as extra baseline
+                'random_colprune_err': float(random_colprune_err) if not np.isnan(random_colprune_err) else np.nan,
                 'params_svd_topk': int(params_svd_topk),
                 'params_random_AB': int(params_random_AB),
                 'nnz_svd_col': int(nnz_svd_col),
+                'topk_energy': float(topk_energy),
             })
 
     df = pd.DataFrame(rows)
@@ -122,7 +136,7 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
         'svd_topk_err': ['mean','std'],
         'random_AB_err': ['mean','std'],
         'rand_svd_subspace_err': ['mean','std'],
-        'svd_colprune_err': ['mean','std'],
+        'leverage_col_err': ['mean','std'],
         'random_colprune_err': ['mean','std'],
     }).reset_index()
 
@@ -134,7 +148,22 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
         else:
             new_cols.append(str(c))
     agg.columns = new_cols
+
+    # sort by rank_used to make plots monotonic
+    if 'rank_used' in agg.columns:
+        agg = agg.sort_values('rank_used').reset_index(drop=True)
+
     agg.to_csv(os.path.join(outdir, 'toy_results_agg.csv'), index=False)
+
+    # quick sanity print: check ordering svd_topk <= rand_svd_sub <= random_AB
+    try:
+        ok_order = (
+            np.all(agg['svd_topk_err_mean'].values <= agg['rand_svd_subspace_err_mean'].values) and
+            np.all(agg['rand_svd_subspace_err_mean'].values <= agg['random_AB_err_mean'].values)
+        )
+    except Exception:
+        ok_order = False
+    print("Sanity (mean over ranks): svd_topk <= rand_svd_sub <= random_AB ?", ok_order)
 
     # simple plots (mean +/- std)
     ranks_vals = agg['rank_used'].values
@@ -156,20 +185,19 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
     plt.close()
 
     plt.figure(figsize=(8,5))
-    m_scol, s_scol = mean_std('svd_colprune_err')
+    m_scol, s_scol = mean_std('leverage_col_err')
     m_rcol, s_rcol = mean_std('random_colprune_err')
-    plt.errorbar(ranks_vals, m_scol, yerr=s_scol, label='svd_colprune_err', marker='o')
+    plt.errorbar(ranks_vals, m_scol, yerr=s_scol, label='leverage_col_err', marker='o')
     plt.errorbar(ranks_vals, m_rcol, yerr=s_rcol, label='random_colprune_err', marker='s')
     plt.xlabel('columns kept (k)')
     plt.ylabel('Relative Frobenius error')
-    plt.title('Column pruning: SVD importance vs Random')
+    plt.title('Column pruning: leverage (SVD) vs Random')
     plt.legend(); plt.grid(True); plt.tight_layout()
     plt.savefig(os.path.join(outdir, 'column_prune_comparison.png'), dpi=150)
     plt.close()
 
     print(f"Saved per-trial CSV: {csv_path}")
     print(f"Saved aggregated CSV: {os.path.join(outdir, 'toy_results_agg.csv')}")
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
