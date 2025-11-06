@@ -57,9 +57,9 @@ def magnitude_column_prune(W, keep):
     norms = np.linalg.norm(W, axis=0)
     keep_idx = np.argsort(norms)[-keep:]
     Wp = W.copy()
-    zero_mask = np.ones(W.shape[1], dtype=bool)
-    zero_mask[keep_idx] = False
-    Wp[:, zero_mask] = 0.0
+    mask = np.ones(W.shape[1], dtype=bool)
+    mask[keep_idx] = False
+    Wp[:, mask] = 0.0
     return Wp, keep_idx
 
 def magnitude_row_prune(W, keep):
@@ -71,24 +71,18 @@ def magnitude_row_prune(W, keep):
     norms = np.linalg.norm(W, axis=1)
     keep_idx = np.argsort(norms)[-keep:]
     Wp = W.copy()
-    zero_mask = np.ones(W.shape[0], dtype=bool)
-    zero_mask[keep_idx] = False
-    Wp[zero_mask, :] = 0.0
+    mask = np.ones(W.shape[0], dtype=bool)
+    mask[keep_idx] = False
+    Wp[mask, :] = 0.0
     return Wp, keep_idx
 
 # ==============================
 # Experiment: SVD vs Random Pruning
 # ==============================
-def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: str = "predictor_results", param_name: str = None, seed: int = 0):
-    """Run a small experiment comparing low-rank SVD reconstruction vs random low-rank and magnitude column pruning.
-
-    - W: 2D numpy array (out x in)
-    - keep_ratio: fraction of singular components to keep (applied to min(n, m))
-    - out_dir: directory to save figures
-    - param_name: optional name used for saved files
-    - seed: RNG seed for reproducibility
-    """
-    np.random.seed(seed)
+def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3):
+    import torch
+    import matplotlib.pyplot as plt
+    np.random.seed(0)
     n, m = W.shape
     total = min(n, m)
     keep = max(1, int(total * keep_ratio))
@@ -99,14 +93,10 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
     B = np.diag(np.sqrt(s[:keep])) @ Vh[:keep, :]
     W_svd = A @ B
 
-    # Random low-rank baseline with same rank (use helper)
-    Ar, Br = random_rank_AB(n, m, keep)
+    # Random low-rank baseline with same rank
+    Ar = np.random.normal(size=(n, keep))
+    Br = np.random.normal(size=(keep, m))
     W_rand = Ar @ Br
-    # scale random baseline to match Frobenius norm of W for a fair comparison
-    norm_W = np.linalg.norm(W, 'fro')
-    norm_rand = np.linalg.norm(W_rand, 'fro')
-    if norm_rand > 0 and norm_W > 0:
-        W_rand = W_rand * (norm_W / norm_rand)
 
     # Magnitude column pruning baseline (keep columns = keep)
     keep_cols = min(keep, m)
@@ -116,17 +106,17 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
     err_rand = rel_fro_error(W, W_rand)
     err_mag = rel_fro_error(W, W_mag)
 
-    safe_name = (param_name or "matrix").replace('.', '_').replace('/', '_')
-    os.makedirs(out_dir, exist_ok=True)
+    safe_name = ("matrix").replace('.', '_').replace('/', '_')
+    os.makedirs('predictor_results', exist_ok=True)
 
     print(f"[Experiment] SVD vs Random Pruning on {W.shape}")
-    print(f"Keeping top-{keep}/{total} singular components ({keep_ratio*100:.1f}%)")
+    print(f"Keeping top-{keep}/{total} singular components ( {keep_ratio*100:.1f}% )")
     print(f"SVD-based relative error:   {err_svd:.6f}")
     print(f"Random-based relative error: {err_rand:.6f}")
     print(f"Magnitude-col pruning err:   {err_mag:.6f}")
 
     # Heatmap comparison: original, SVD recon, random recon, mag-pruned
-    vmax = np.max(np.abs(W)) if np.any(W) else 1.0
+    vmax = np.max(np.abs(W))
     fig, axes = plt.subplots(1, 4, figsize=(12, 3))
     ims = []
     ims.append(axes[0].imshow(W, aspect='auto', cmap='viridis', vmin=-vmax, vmax=vmax))
@@ -142,11 +132,8 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
         ax.set_yticks([])
     plt.suptitle(f'Comparison: {safe_name}')
     plt.tight_layout()
-    plt.subplots_adjust(top=0.82)
-    fig.colorbar(ims[0], ax=axes.ravel().tolist(), orientation='vertical', fraction=0.02)
-    fig_path = os.path.join(out_dir, f"exp_{safe_name}_comparison.png")
-    plt.savefig(fig_path, dpi=150)
-    plt.close(fig)
+    plt.savefig(os.path.join('predictor_results', f"exp_{safe_name}_comparison.png"), dpi=150)
+    plt.close()
 
     # Plot relative errors as bar chart
     fig, ax = plt.subplots(figsize=(4,3))
@@ -154,126 +141,8 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
     ax.set_ylabel('relative Frobenius error')
     ax.set_title(f'Errors ({safe_name})')
     plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, f"exp_{safe_name}_errors.png"), dpi=150)
+    plt.savefig(os.path.join('predictor_results', f"exp_{safe_name}_errors.png"), dpi=150)
     plt.close(fig)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='distilbert-base-uncased')
-    parser.add_argument('--rank', type=int, default=8)
-    parser.add_argument('--out_dir', type=str, default='predictor_results')
-    parser.add_argument('--run_experiment', action='store_true', help='Run SVD vs random pruning experiment on one weight matrix')
-    parser.add_argument('--keep_ratio', type=float, default=0.3, help='Fraction of singular components to keep in experiment')
-    parser.add_argument('--experiment_param', type=str, default='', help='(optional) exact parameter name to run experiment on')
-    parser.add_argument('--seed', type=int, default=0, help='RNG seed for reproducibility')
-    parser.add_argument('--max_layers', type=int, default=200, help='Max 2D params to inspect')
-    args = parser.parse_args()
-
-    np.random.seed(args.seed)
-
-    os.makedirs(args.out_dir, exist_ok=True)
-    print("Loading model:", args.model)
-    model = AutoModel.from_pretrained(args.model)
-    model.eval()
-
-    rows = []
-    last_W = None
-    last_name = None
-    count = 0
-    for name, p in model.named_parameters():
-        if p.ndim != 2:
-            continue
-        count += 1
-        if args.max_layers and count > args.max_layers:
-            print(f"Reached max_layers limit ({args.max_layers}), stopping after {count-1} 2D params.")
-            break
-        W = p.detach().cpu().numpy()
-        n, m = W.shape
-        print("Inspecting:", name, W.shape)
-
-        # local SVD predictor (compute A/B and singular values)
-        A, B, s = compute_local_svd_predictor(W, args.rank)
-        W_svd = A @ B
-        err_svd = rel_fro_error(W, W_svd)
-
-        # random rank (baseline) - use random subset of W's singular components for a fair baseline
-        U_full, s_full, Vh_full = svd(W, full_matrices=False)
-        rng = np.random.default_rng(args.seed + count)
-        k_rand = min(args.rank, len(s_full))
-        if k_rand > 0:
-            idx = rng.permutation(len(s_full))[:k_rand]
-            W_rand = (U_full[:, idx] @ np.diag(s_full[idx]) @ Vh_full[idx, :])
-        else:
-            W_rand = np.zeros_like(W)
-        err_rand_rank = rel_fro_error(W, W_rand)
-
-        # column & row magnitude pruning
-        keep = min(args.rank, m)
-        W_mag_col, _ = magnitude_column_prune(W, keep)
-        err_mag_col = rel_fro_error(W, W_mag_col)
-        W_mag_row, _ = magnitude_row_prune(W, keep)
-        err_mag_row = rel_fro_error(W, W_mag_row)
-        err_mag_best = min(err_mag_col, err_mag_row)
-
-        # energy coverage for top-k singular values
-        energy_total = float(np.sum(s**2)) if s.size > 0 else 0.0
-        k = min(args.rank, len(s))
-        energy_k = float(np.sum(s[:k]**2) / energy_total) if energy_total > 0 else 0.0
-
-        rows.append({
-            'param': name,
-            'shape': f"{n}x{m}",
-            'svd_err': err_svd,
-            'rand_rank_err': err_rand_rank,
-            'mag_col_err': err_mag_col,
-            'mag_row_err': err_mag_row,
-            'mag_best_err': err_mag_best,
-            'topk_energy': energy_k,
-            'top_singular_values': ",".join([f"{x:.3e}" for x in s[:10]]),
-        })
-
-        # singular value plot
-        plt.figure(figsize=(4,3))
-        plt.semilogy(s, marker='o')
-        plt.title(name)
-        plt.xlabel('i')
-        plt.ylabel('singular value (log)')
-        plt.tight_layout()
-        safe_name = name.replace('.', '_').replace('/', '_')
-        plt.savefig(os.path.join(args.out_dir, f"svd_{safe_name}.png"), dpi=150)
-        plt.close()
-
-        last_W = W
-        last_name = name
-
-    df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(args.out_dir, 'layer_reconstruction.csv'), index=False)
-    print("Saved results to", args.out_dir)
-
-    # summary statistics
-    if not df.empty:
-        cols = [c for c in ['svd_err','rand_rank_err','mag_best_err'] if c in df.columns]
-        if cols:
-            print("Mean errors:")
-            print(df[cols].mean().to_string())
-
-    # Optionally run the experiment on a selected or last-inspected weight matrix
-    if args.run_experiment and last_W is not None:
-        if args.experiment_param:
-            # try to find matching parameter by name
-            found = False
-            for name, p in model.named_parameters():
-                if name == args.experiment_param and p.ndim == 2:
-                    Wsel = p.detach().cpu().numpy()
-                    svd_vs_random_experiment(Wsel, keep_ratio=args.keep_ratio, out_dir=args.out_dir, param_name=name, seed=args.seed)
-                    found = True
-                    break
-            if not found:
-                print(f"Parameter '{args.experiment_param}' not found or not 2D. Running on last inspected parameter '{last_name}' instead.")
-                svd_vs_random_experiment(last_W, keep_ratio=args.keep_ratio, out_dir=args.out_dir, param_name=last_name, seed=args.seed)
-        else:
-            svd_vs_random_experiment(last_W, keep_ratio=args.keep_ratio, out_dir=args.out_dir, param_name=last_name, seed=args.seed)
-
-
 if __name__ == '__main__':
-    main()
+    print('This module provides helper functions. Run as script to inspect a model.')
