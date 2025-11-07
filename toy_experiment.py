@@ -57,8 +57,9 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
                 W_svd = np.zeros_like(W)
             svd_topk_err = rel_fro_error(W, W_svd)
 
-            # compute top-k explained energy
-            topk_energy = float(np.sum(s[:k_eff]**2) / np.sum(s**2)) if s.size else 0.0
+            # compute top-k explained energy (with safe denominator guard)
+            den = np.sum(s**2)
+            topk_energy = float(np.sum(s[:k_eff]**2) / den) if den > 0 else 0.0
             k_ratio = float(k_eff) / float(min(n, m)) if min(n, m) > 0 else 0.0
 
             # random AB baseline (A@B scaled to W Frobenius)
@@ -157,10 +158,11 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
 
     # quick sanity print: check ordering svd_topk <= rand_svd_sub <= random_AB
     try:
-        ok_order = (
-            np.all(agg['svd_topk_err_mean'].values <= agg['rand_svd_subspace_err_mean'].values) and
-            np.all(agg['rand_svd_subspace_err_mean'].values <= agg['random_AB_err_mean'].values)
-        )
+         eps = 1e-12
+         ok_order = (
+             np.all(agg['svd_topk_err_mean'].values <= agg['rand_svd_subspace_err_mean'].values + eps) and
+             np.all(agg['rand_svd_subspace_err_mean'].values <= agg['random_AB_err_mean'].values + eps)
+         )
     except Exception:
         ok_order = False
     print("Sanity (mean over ranks): svd_topk <= rand_svd_sub <= random_AB ?", ok_order)
