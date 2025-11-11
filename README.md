@@ -64,32 +64,33 @@ svd_topk_err  <  rand_svd_subspace_err  <  random_AB_err
 This confirms that a good importance signal (SVD/energy) beats random selection.
 
 
-Phase B — Real model weights (SVD vs simple baselines)
-Purpose (SparseLoRA tie-in). Verify that real Transformer layers are spectrally skewed (a few large singular values) and that the optimal SVD top-k reconstruction beats simple baselines at the same rank k. This supports the SparseLoRA idea that you can keep only a small, well-chosen subset with little loss.
-
+Phase B — Real model weights (SVD vs structured/random baselines)
+Purpose (SparseLoRA tie-in). Check that real Transformer layers are spectrally skewed (few large singular values) and that SVD-top-k and energy/leverage signals beat simple baselines at the same rank k. This supports the SparseLoRA idea: keep a small, well-chosen subset with little loss.
 Run:
 python inspect_svd_predictors.py \
   --model distilbert-base-uncased \
   --rank 8 \
   --seed 0 \
-  --out_dir predictor_results
+  --out_dir predictor_results \
+  --max_layers 200 \
+  --max_elems 10000000 \
+  --run_experiment \
+  --keep_ratio 0.3
+  
+Per-layer CSV fields (layer_reconstruction.csv):
+- Errors: svd_topk_err, rand_svd_subspace_err, random_AB_err, leverage_col_err, mag_col_err, mag_row_err, mag_best_err
+- Diagnostics: topk_energy, fro_norm, top_singular_values
+- Budgets: params_svd_topk, params_random_AB, nnz_mag_col, nnz_mag_row
+- Timings (ms): svd_ms, recon_ms, rand_sub_ms, rand_ab_ms, leverage_ms, mag_ms
+- Meta: param, shape, n, m, seed, k_used
 
-Per-layer CSV fields:
-- Errors: svd_topk_err, rand_svd_subspace_err (random k singular components), mag_row_err, mag_col_err
-- Diagnostics: topk_energy (∑₁ᵏ sᵢ² / ∑ sᵢ²), k_ratio (k / min(n,m))
-- Shapes/meta: param, shape, n, m, k_used
-
-Output:
-- predictor_results/layer_reconstruction.csv with the columns above.
+Figures:
+- Singular value decay per layer: svd_<param>.png
+- Optional one-off comparison panel for a selected/last layer when --run_experiment is set.
 
 Expected trends:
-- svd_topk_err < rand_svd_subspace_err
-- mag_row_err / mag_col_err typically between those two
-- Higher topk_energy ⇒ stronger spectral concentration.
-
-Notes:
-- This script does not include leverage/energy column subsets, random-AB baselines, timing fields, or storage-budget fields.
-- Rank is clamped to min(n, m) to avoid shape errors.
+- svd_topk_err < rand_svd_subspace_err ≤ random_AB_err
+- mag_*_err typically sits between SVD and random baselines. Higher topk_energy ⇒ stronger spectral concentration.
 
 
 Phase C — LoRA adapter prune → fine-tune (GPU recommended)
@@ -112,10 +113,11 @@ python prune_finetune_lora-3.py \
   --seed 0 \
   --out_dir lora_runs
   
-Target modules. The script tries generic names (q,k,v,out,dense,fc1,fc2,classifier) and falls back to DistilBERT‑style (q_lin,k_lin,v_lin,out_lin). 
-Override with --target_modules if needed.
+Target modules. The script uses a fixed generic list of target modules: q, k, v, out, dense, fc1, fc2, classifier.
+If your model uses different names, edit this list in the script (target_modules = [...]).
 
-Logged metrics: pre/post accuracy & wall‑clock, method/keep_ratio/r/seed, LoRA trainable vs total params, target modules, plus run args JSON.
+Logged to CSV: pre/post accuracy & wall-clock, method/keep_ratio/r/seed, sample sizes, warm/post epochs. Run args are also saved to JSON. Trainable-parameter counts are printed to stdout (not CSV).
+
 Why this is SparseLoRA‑flavoured. 
   - Warm‑up ≈ lets adapter weights encode saliency first.
   - Channel‑energy ranking ≈ a simple predictor scoring channels.
@@ -132,14 +134,14 @@ Sparsity vs accuracy curves. In Phase C, vary --keep_ratio (e.g., 0.25/0.5/0.75)
 Compute savings proxy. While we don’t measure runtime kernels, LoRA FLOPs scale roughly with active channels:
 FLOPs_adapter ∝ (d_in + d_out) × r_active (vs r_full).
 So keep_ratio ≈ r_active/r_full is a decent proxy for savings.
+
 Metrics & Statistics
 - Reconstruction:
   - Relative Frobenius error: ||W - W_hat||_F / ||W||_F
-  - Spectral norm error: ||W - W_hat||_2 / ||W||_2
 - Downstream:
   - Validation accuracy (SST-2), loss curves, steps-to-recovery
 - Efficiency:
-  - Time per training step (ms), wall-clock training time, GPU memory usage (nvidia-smi), approximate FLOPs (optional)
+  - Wall-clock training time, GPU memory usage (nvidia-smi), approximate FLOPs (optional)
 - Statistical tests:
   - For random baselines: run multiple repeats (30+), report mean ± std, use paired t-test or Wilcoxon test vs SVD results; report p-values and effect sizes.
 
