@@ -64,27 +64,28 @@ svd_topk_err  <  rand_svd_subspace_err  <  random_AB_err
 This confirms that a good importance signal (SVD/energy) beats random selection.
 
 
-Phase B — Real model weight & SparseLoRA predictors (CPU/GPU)
-Purpose (SparseLoRA tie‑in). Check that real Transformer layers are spectrally skewed (few large singular values) and that SVD‑top‑k or SVD‑derived leverage scores produce lower reconstruction error than simple baselines.
-Example:
+Phase B — Real model weights (SVD vs simple baselines)
+Purpose (SparseLoRA tie-in). Verify that real Transformer layers are spectrally skewed (a few large singular values) and that the optimal SVD top-k reconstruction beats simple baselines at the same rank k. This supports the SparseLoRA idea that you can keep only a small, well-chosen subset with little loss.
+Run:
 python inspect_svd_predictors.py \
   --model distilbert-base-uncased \
   --rank 8 \
   --seed 0 \
-  --out_dir predictor_results \
-  --max_layers 200 \
-  --max_elems 10000000 \
-  --run_experiment \
-  --keep_ratio 0.3
+  --out_dir predictor_results
   
-Per‑layer CSV fields (high‑level): 
-- errors: svd_topk_err, rand_svd_subspace_err, random_AB_err, leverage_col_err, mag_col_err, mag_row_err, mag_best_err
-- energy/timings: topk_energy, fro_norm, svd_ms, recon_ms, rand_sub_ms, rand_ab_ms, leverage_ms, mag_ms
-- budgets: factor param counts and nnz for structured pruning
-- diag: top singular values list, shapes, seed
-Figures: Singular value decay per layer and one‑off comparison panels for a selected layer.
-
-Why this matters for SparseLoRA. If layers are power‑law‑ish and column energy is concentrated, a lightweight predictor should be able to rank channels and keep only a sparse subset with little loss.
+Per-layer CSV fields:
+- Errors: svd_topk_err, err_rand_rank (random k singular components), err_mag_row, err_mag_col, err_zero
+- Diagnostics: topk_energy (∑₁ᵏ sᵢ² / ∑ sᵢ²), k_ratio (k / min(n,m))
+- Shapes/meta: param, shape, n, m, rank_used
+Output:
+- predictor_results/layer_reconstruction.csv with the columns above.
+Expected trends:
+- svd_topk_err < err_rand_rank
+- err_mag_row / err_mag_col typically between those two
+- Higher topk_energy ⇒ stronger spectral concentration.
+Notes:
+- This script does not include leverage/energy column subsets, random-AB baselines, timing fields, or storage-budget fields.
+- Rank is clamped to min(n, m) to avoid shape errors.
 
 
 Phase C — LoRA adapter prune → fine-tune (GPU recommended)
