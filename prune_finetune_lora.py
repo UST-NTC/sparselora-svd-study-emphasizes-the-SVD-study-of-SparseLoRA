@@ -38,7 +38,7 @@ python prune_finetune_lora.py \
 import os, re, time, math, json, random, csv
 from dataclasses import dataclass
 from typing import List, Optional
-
+import csv
 import numpy as np
 import torch
 from datasets import load_dataset
@@ -333,7 +333,7 @@ def main():
     kept_summary = []
     for pair in pairs:
         r = pair.r
-        keep = max(1, int(math.ceil(args.keep_ratio * r)))
+        keep = max(1, min(r, int(math.ceil(args.keep_ratio * r))))
         imp = channel_importance(pair.A, pair.B, mode=args.method, rng=rng)
         keep_idx = np.argsort(imp)[-keep:]
         prune_channels_inplace(pair, keep_idx)
