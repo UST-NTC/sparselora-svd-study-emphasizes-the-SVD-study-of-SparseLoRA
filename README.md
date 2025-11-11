@@ -66,23 +66,27 @@ This confirms that a good importance signal (SVD/energy) beats random selection.
 
 Phase B — Real model weights (SVD vs simple baselines)
 Purpose (SparseLoRA tie-in). Verify that real Transformer layers are spectrally skewed (a few large singular values) and that the optimal SVD top-k reconstruction beats simple baselines at the same rank k. This supports the SparseLoRA idea that you can keep only a small, well-chosen subset with little loss.
+
 Run:
 python inspect_svd_predictors.py \
   --model distilbert-base-uncased \
   --rank 8 \
   --seed 0 \
   --out_dir predictor_results
-  
+
 Per-layer CSV fields:
-- Errors: svd_topk_err, err_rand_rank (random k singular components), err_mag_row, err_mag_col, err_zero
+- Errors: svd_topk_err, rand_svd_subspace_err (random k singular components), mag_row_err, mag_col_err
 - Diagnostics: topk_energy (∑₁ᵏ sᵢ² / ∑ sᵢ²), k_ratio (k / min(n,m))
-- Shapes/meta: param, shape, n, m, rank_used
+- Shapes/meta: param, shape, n, m, k_used
+
 Output:
 - predictor_results/layer_reconstruction.csv with the columns above.
+
 Expected trends:
-- svd_topk_err < err_rand_rank
-- err_mag_row / err_mag_col typically between those two
+- svd_topk_err < rand_svd_subspace_err
+- mag_row_err / mag_col_err typically between those two
 - Higher topk_energy ⇒ stronger spectral concentration.
+
 Notes:
 - This script does not include leverage/energy column subsets, random-AB baselines, timing fields, or storage-budget fields.
 - Rank is clamped to min(n, m) to avoid shape errors.
