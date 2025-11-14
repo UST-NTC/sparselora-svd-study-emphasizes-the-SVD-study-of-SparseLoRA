@@ -158,10 +158,10 @@ def run_toy(n=128, m=64, ranks=(8,16,32), trials=200, seed=0, outdir='toy_result
 
     # quick sanity print: check ordering svd_topk <= rand_svd_sub <= random_AB
     try:
-         eps = 1e-12
-         ok_order = (
-             np.all(agg['svd_topk_err_mean'].values <= agg['rand_svd_subspace_err_mean'].values + eps) and
-             np.all(agg['rand_svd_subspace_err_mean'].values <= agg['random_AB_err_mean'].values + eps)
+        eps = 1e-12
+        ok_order = (
+            np.all(agg['svd_topk_err_mean'].values <= agg['rand_svd_subspace_err_mean'].values + eps) and
+            np.all(agg['rand_svd_subspace_err_mean'].values <= agg['random_AB_err_mean'].values + eps)
          )
     except Exception:
         ok_order = False
@@ -211,3 +211,4 @@ if __name__ == '__main__':
     parser.add_argument('--outdir', type=str, default='toy_results')
     args = parser.parse_args()
     run_toy(n=args.n, m=args.m, ranks=tuple(args.ranks), trials=args.trials, seed=args.seed, outdir=args.outdir)
++
