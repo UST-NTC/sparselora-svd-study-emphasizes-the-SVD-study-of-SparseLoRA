@@ -139,7 +139,8 @@ def prune_channels_inplace(pair: LoraPair, keep_idx: np.ndarray):
     device = pair.A.device
     r = pair.r
     mask_row = torch.zeros((r, 1), dtype=pair.A.dtype, device=device)
-    mask_row[torch.tensor(keep_idx, device=device)] = 1.0
+    keep_idx_tensor = torch.tensor(keep_idx, dtype=torch.long, device=device)
+    mask_row[keep_idx_tensor] = 1.0
     mask_col = mask_row.t()  # (1, r)
 
     with torch.no_grad():
