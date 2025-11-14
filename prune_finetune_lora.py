@@ -38,8 +38,6 @@ python prune_finetune_lora.py \
 import os, re, time, math, json, random, csv
 from dataclasses import dataclass
 from typing import List, Optional
-import csv
-import numpy as np
 import torch
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score
@@ -56,7 +54,6 @@ from peft import LoraConfig, get_peft_model, TaskType
 
 def set_seeds(seed: int):
     random.seed(seed)
-    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -75,8 +72,9 @@ def get_text_map(dataset_id: str):
 def select_subset(ds, n: Optional[int], seed: int):
     if n is None or n <= 0 or n >= len(ds):
         return ds
-    idx = np.random.RandomState(seed).choice(len(ds), size=n, replace=False)
-    return ds.select(sorted(idx.tolist()))
+    sampler = random.Random(seed)
+    idx = sampler.sample(range(len(ds)), k=n)
+    return ds.select(sorted(idx))
 
 # -------------- LoRA helpers --------------
 
@@ -111,27 +109,27 @@ def collect_lora_pairs(model) -> List[LoraPair]:
         pairs.append(LoraPair(prefix=m.group(1)+".", A_name=name, B_name=B_name, A=A, B=B, r=int(r_A)))
     return pairs
 
-def channel_importance(A: torch.Tensor, B: torch.Tensor, mode: str, rng: np.random.Generator) -> np.ndarray:
+def channel_importance(A: torch.Tensor, B: torch.Tensor, mode: str, rng: random.Random) -> torch.Tensor:
     """
     Compute per-channel importance for rank r.
     A: (r, in), B: (out, r)
-    Returns array of shape (r,)
+    Returns 1D tensor of shape (r,)
     """
     r = A.shape[0]
     if mode == "channel_energy":
         # exact norm of rank-1 component b_k a_k^T: ||b_k a_k^T||_F^2 = ||b_k||^2 * ||a_k||^2
         b_norm2 = torch.sum(B**2, dim=0)        # (r,)
         a_norm2 = torch.sum(A**2, dim=1)        # (r,)
-        imp = (b_norm2 * a_norm2).detach().cpu().numpy()
+        imp = (b_norm2 * a_norm2).detach().float().cpu()
     elif mode == "magnitude_B":
-        imp = torch.sum(B**2, dim=0).detach().cpu().numpy()
+        imp = torch.sum(B**2, dim=0).detach().float().cpu()
     elif mode == "random":
-        imp = rng.random(r)
+        imp = torch.tensor([rng.random() for _ in range(r)], dtype=A.dtype).float().cpu()
     else:
         raise ValueError(f"Unknown pruning mode: {mode}")
     return imp
 
-def prune_channels_inplace(pair: LoraPair, keep_idx: np.ndarray):
+def prune_channels_inplace(pair: LoraPair, keep_idx: List[int]):
     """
     Zero rows in A (pruned channels) and zero columns in B (same channels).
     Also install gradient masks to prevent regrowth.
@@ -323,7 +321,7 @@ def main():
     print(f"[Warm-up] eval accuracy: {acc_before:.4f}, time: {warm_time:.2f}s")
 
     # ---- Prune LoRA channels coherently ----
-    rng = np.random.default_rng(args.seed)
+    rng = random.Random(args.seed)
     pairs = collect_lora_pairs(model)
     if not pairs:
         # help user debug
@@ -336,7 +334,7 @@ def main():
         r = pair.r
         keep = max(1, min(r, int(math.ceil(args.keep_ratio * r))))
         imp = channel_importance(pair.A, pair.B, mode=args.method, rng=rng)
-        keep_idx = np.argsort(imp)[-keep:]
+        keep_idx = torch.topk(imp, keep, largest=True).indices.tolist()
         prune_channels_inplace(pair, keep_idx)
         kept_summary.append((pair.prefix, r, keep))
 
@@ -379,7 +377,11 @@ def main():
         "post_epochs": args.post_epochs,
         "acc_before": acc_before,
         "acc_after": acc_after,
-        "delta_acc": acc_after - acc_before if (not np.isnan(acc_before) and not np.isnan(acc_after)) else float("nan"),
+        "delta_acc": (
+            acc_after - acc_before
+            if (not math.isnan(acc_before) and not math.isnan(acc_after))
+            else float("nan")
+        ),
         "warm_time_sec": warm_time,
         "post_time_sec": post_time,
         "target_modules": ",".join(lcfg.target_modules) if hasattr(lcfg, "target_modules") else "",
