@@ -211,4 +211,3 @@ if __name__ == '__main__':
     parser.add_argument('--outdir', type=str, default='toy_results')
     args = parser.parse_args()
     run_toy(n=args.n, m=args.m, ranks=tuple(args.ranks), trials=args.trials, seed=args.seed, outdir=args.outdir)
-+
