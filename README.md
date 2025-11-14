@@ -1,14 +1,18 @@
-# SparseLoRA-Inspired SVD Study — Capstone Project
+# SparseLoRA-Inspired SVD Study — HKUST Capstone Project
 
-This repository contains the code that accompanies the capstone project based on the paper
-[SparseLoRA: Sparsity-Aware Low-Rank Adaptation of Large Language Models](https://openreview.net/pdf?id=z83rodY0Pw).
-The goal is to help bachelor students reason through the three key empirical claims of the
-paper by progressing from controlled linear-algebra experiments to transformer weight
-inspection and, finally, to a lightweight LoRA pruning + fine-tuning loop.
+I am a year 4 student at The Hong Kong University of Science and Technology and this
+repository contains the code and experimental notes for my capstone project. The work is
+grounded in the paper [SparseLoRA: Sparsity-Aware Low-Rank Adaptation of Large Language
+Models](https://openreview.net/pdf?id=z83rodY0Pw) and is designed to reproduce, interpret,
+and extend the empirical evidence behind SparseLoRA's sparsity-aware LoRA adapters. The
+experiments progress from controlled linear-algebra toy studies, to inspection of real
+transformer weights, and finally to a lightweight LoRA pruning + fine-tuning loop that can
+be executed within academic compute limits.
 
-The repo is intentionally compact: every experiment is a single script. Students are
-encouraged to read the paper section-by-section and then reproduce/extend the evidence with
-the corresponding phase below.
+Every experiment in the repo is a single, well-documented Python script so that the full
+pipeline can be presented clearly to my professor. The sections below spell out the aim of
+each experiment, how it connects to the SparseLoRA claims, and a brief summary of the
+results already obtained from the provided run logs.
 
 ## Repository layout
 
@@ -44,20 +48,30 @@ for the correct CUDA wheel before installing the remaining packages.
 
 ## 2. Phase A — Low-rank structure on synthetic data (`toy_experiment.py`)
 
-**Motivation from the paper.** SparseLoRA relies on the observation that most of the energy in
-adapter weights concentrates in a few singular directions. This script stress-tests that
-assumption with random Gaussian matrices where the ground truth optimum is known.
+**Aim (SparseLoRA connection).** SparseLoRA activates only the most energy-bearing LoRA
+channels. On synthetic matrices we can test that the SVD really concentrates energy in the top
+singular directions and therefore justifies sparsity-aware selection.
 
-**What it does.** For each requested rank `k`, the script draws matrices `W ∈ R^{n×m}`, computes:
+**What the script does.** For each requested rank `k`, the script draws Gaussian matrices and
+evaluates competing reconstruction or pruning strategies that mirror the metrics in the
+SparseLoRA paper:
 
-* `svd_topk_err`: optimal rank-`k` reconstruction using the leading singular vectors
-* `rand_svd_subspace_err`: reconstruction using a random subset of singular vectors (strong random baseline)
-* `random_AB_err`: factors with random `A` and `B`, scaled to match `||W||_F`
-* `leverage_col_err`: column pruning based on singular-value energy (leverage scores)
-* `random_colprune_err`: column pruning with uniformly random columns
+* `svd_topk_err`: oracle top-`k` reconstruction using leading singular vectors.
+* `rand_svd_subspace_err`: a strong random baseline using random singular directions.
+* `random_AB_err`: random low-rank factors scaled to the Frobenius norm of the target.
+* `leverage_col_err`: keep columns with the highest singular-value energy (leverage scores).
+* `random_colprune_err`: uniformly random column subset.
 
-Results are written to `toy_results/` as per-trial CSVs and aggregate statistics with mean ±
-standard deviation, plus diagnostic plots.
+Per-trial results go to `toy_results/toy_results_per_trial.csv`, with aggregated means/standard
+deviations and plots saved alongside.
+
+**Current results.** With `n=128`, `m=64`, `ranks={8,16,32}`, and `200` trials (see
+`toy_results/toy_results_agg.csv`), the SVD consistently beats the random baselines. For
+example, at rank 16 the relative Frobenius error is `0.701 ± 0.004` for `svd_topk_err`, compared
+to `0.866 ± 0.025` for `rand_svd_subspace_err` and `1.413 ± 0.008` for `random_AB_err`. The column
+pruning experiment shows the SVD-informed leverage scores (`0.842 ± 0.002`) outperforming random
+column selection (`0.867 ± 0.004`). These numbers empirically
+validate the spectral sparsity assumption highlighted in SparseLoRA.
 
 **Example run** (fast, CPU friendly):
 
@@ -75,22 +89,26 @@ matching the hierarchy discussed in the paper. Include summary tables in your re
 
 ## 3. Phase B — Inspecting real transformer weights (`inspect_svd_predictors.py`)
 
-**Motivation from the paper.** SparseLoRA assumes real model layers remain spectrally skewed,
-so the importance signal derived from SVD (or cheap proxies) can rank channels to keep.
-**What it does.** The script iterates over every 2D weight matrix of a Hugging Face model,
-computes its SVD, and logs reconstruction errors for multiple selection rules at a user-specified
-rank:
+**Aim (SparseLoRA connection).** The SparseLoRA paper argues that real transformer layers are
+spectrally skewed, allowing SVD-based signals (or cheaper proxies) to identify the most useful
+channels. This script verifies that assumption directly on Hugging Face models.
 
-* `svd_topk_err` (oracle)
-* `rand_svd_subspace_err`
-* `random_AB_err`
-* `leverage_col_err`
-* `mag_col_err`, `mag_row_err`, `mag_best_err`
+**What the script does.** For each 2D weight matrix in a model, we compute its SVD and compare
+multiple reconstruction baselines at a chosen rank, including:
 
+* `svd_topk_err` (oracle reconstruction).
+* `rand_svd_subspace_err` and `random_AB_err` (randomized baselines).
+* `leverage_col_err`, `mag_col_err`, `mag_row_err`, and `mag_best_err` (structured pruning heuristics).
 
-Per-layer diagnostics—including singular value decay plots and timing information—are saved
-to `predictor_results/`. When `--run_experiment` is set, a heatmap comparison figure is produced
-for one layer (optionally specified via `--experiment_param`).
+The script produces a per-layer CSV (`predictor_results/layer_reconstruction.csv`), singular
+value plots for each matrix, and optional detailed comparison figures when
+`--run_experiment` is provided.
+
+**Current results.** Running on `distilbert-base-uncased` with rank 8 shows that the SVD oracle
+achieves an average relative error of `0.94`, while the random low-rank baseline is at `1.41`.
+The leverage-score and magnitude heuristics cluster near `0.99`, confirming that simple
+statistics already capture most of the SVD signal. This mirrors SparseLoRA's claim that
+structured importance metrics can stand in for full SVDs when selecting channels.
 
 **Example run** (takes a few minutes on CPU):
 
@@ -112,23 +130,32 @@ random baselines, as predicted by the paper.
 
 ## 4. Phase C — LoRA pruning + recovery (`prune_finetune_lora.py`)
 
-**Motivation from the paper.** SparseLoRA replaces dense adapters with a predictor that activates
-only salient channels per token. We approximate that pipeline by (a) learning LoRA adapters,
-(b) pruning them coherently, and (c) fine-tuning to recover accuracy.
+**Aim (SparseLoRA connection).** SparseLoRA performs sparse, per-token activation of LoRA
+channels. This phase approximates that idea with a static pruning + fine-tuning loop to
+evaluate how well energy-based channel scores preserve task accuracy compared with naive
+alternatives.
 
-**What it does.**
+**What the script does.**
 
 1. Attaches LoRA adapters of rank `r` to a Hugging Face classifier (default: DistilBERT on SST-2).
 2. Runs a short warm-up training phase with all channels active.
 3. Computes per-channel importances and keeps the top `keep_ratio * r` channels.
-4. Continues training with the pruned adapters.
+4. Continues training with the pruned adapters while masking gradients of pruned weights.
 5. Logs accuracies, timing, and LoRA parameter counts to `lora_runs/results.csv`.
 
 Available pruning strategies:
 
-* `channel_energy` (||B[:,k]||² · ||A[k,:]||²) — rank-consistent energy proxy
-* `magnitude_B` (||B[:,k]||²) — simple baseline
-* `random`
+* `channel_energy` (‖B[:,k]‖² · ‖A[k,:]‖²) — rank-consistent energy proxy inspired by SparseLoRA.
+* `magnitude_B` (‖B[:,k]‖²) — simple baseline.
+* `random` — sanity-check control.
+
+**Current results.** A reference run on `distilbert-base-uncased` with `r=8`, `keep_ratio=0.5`,
+and the `channel_energy` heuristic keeps four channels per adapter and slightly improves SST-2
+accuracy from `0.54` before pruning to `0.56` after recovery (`delta_acc = +0.02`). This
+demonstrates that the energy-based score can retain task performance even when half of the
+LoRA channels are removed, echoing the accuracy/efficiency trade-off emphasized in the
+SparseLoRA paper. Additional sweeps over seeds, keep ratios, and pruning methods can extend
+this table.
 
 **Example run** (GPU strongly recommended):
 
