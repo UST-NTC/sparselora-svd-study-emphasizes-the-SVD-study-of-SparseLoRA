@@ -1,0 +1,18 @@
+{
+  "model": "distilbert-base-uncased",
+  "dataset": "glue/sst2",
+  "lora_r": 8,
+  "lora_alpha": 16,
+  "keep_ratio": 0.5,
+  "method": "channel_energy",
+  "warmup_epochs": 1.0,
+  "post_epochs": 1.0,
+  "train_samples": 200,
+  "eval_samples": 200,
+  "train_bsz": 16,
+  "eval_bsz": 32,
+  "lr": 0.0002,
+  "seed": 0,
+  "out_dir": "lora_runs",
+  "target_modules": ""
+}

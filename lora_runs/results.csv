@@ -1,0 +1,2 @@
+model,dataset,method,keep_ratio,lora_r,effective_r,seed,train_samples,eval_samples,warmup_epochs,post_epochs,acc_before,acc_after,delta_acc,warm_time_sec,post_time_sec,target_modules,lora_trainable_params,lora_total_params
+distilbert-base-uncased,glue/sst2,channel_energy,0.5,8,4,0,200,200,1.0,1.0,0.54,0.56,0.020000000000000018,4.848064661026001,4.8329994678497314,"k_lin,v_lin,out_lin,q_lin",294912,294912
