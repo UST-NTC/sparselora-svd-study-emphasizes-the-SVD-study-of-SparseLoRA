@@ -55,9 +55,18 @@ def local_svd_reconstruction_from_svd(U, s, Vh, rank):
     rank = int(max(0, min(rank, len(s))))
     if rank == 0:
         n, m = U.shape[0], Vh.shape[1]
-        return np.zeros((n, m), dtype=np.float32), np.zeros((n, 0)), np.zeros((0, m))
-    A = U[:, :rank] @ np.diag(np.sqrt(s[:rank]))
-    B = np.diag(np.sqrt(s[:rank])) @ Vh[:rank, :]
+        dtype = U.dtype
+        return (
+            np.zeros((n, m), dtype=dtype),
+            np.zeros((n, 0), dtype=dtype),
+            np.zeros((0, m), dtype=dtype),
+        )
+
+    sqrt_s = np.sqrt(s[:rank])
+    # Scale columns/rows instead of forming explicit diagonal matrices.
+    # This avoids allocating O(rank^2) temporary arrays for large ranks.
+    A = U[:, :rank] * sqrt_s[np.newaxis, :]
+    B = sqrt_s[:, np.newaxis] * Vh[:rank, :]
     return A @ B, A, B
 
 def random_AB_baseline(n, m, rank, target_norm=None, rng=None):
@@ -153,7 +162,13 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
     # random subset of W's singular components
     t0 = time.time()
     idx = rng.permutation(len(s))[:k]
-    W_rand_svd_sub = (U[:, idx] @ np.diag(s[idx]) @ Vh[idx, :]) if k > 0 else np.zeros_like(W)
+       if k > 0:
+        U_sub = U[:, idx]
+        s_sub = s[idx]
+        Vh_sub = Vh[idx, :]
+        W_rand_svd_sub = (U_sub * s_sub[np.newaxis, :]) @ Vh_sub
+    else:
+        W_rand_svd_sub = np.zeros_like(W)
     W_rand_svd_sub = W_rand_svd_sub.astype(W.dtype, copy=False)
     t_rand_sub = (time.time() - t0) * 1000.0
 
@@ -298,7 +313,10 @@ def main():
         k_rand = rank_clamped
         if k_rand > 0:
             idx = rng.permutation(len(s))[:k_rand]
-            W_rand_svd_sub = (U[:, idx] @ np.diag(s[idx]) @ Vh[idx, :])
+            U_sub = U[:, idx]
+            s_sub = s[idx]
+            Vh_sub = Vh[idx, :]
+            W_rand_svd_sub = (U_sub * s_sub[np.newaxis, :]) @ Vh_sub
         else:
             W_rand_svd_sub = np.zeros_like(W)
         W_rand_svd_sub = W_rand_svd_sub.astype(W.dtype, copy=False)
