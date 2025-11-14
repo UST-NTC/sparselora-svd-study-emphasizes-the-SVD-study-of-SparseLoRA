@@ -18,14 +18,41 @@ import argparse
 import os
 import re
 import time
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")  # headless-safe backend
-import matplotlib.pyplot as plt
-import torch
-from transformers import AutoModel
-from scipy.linalg import svd
-import pandas as pd
+import csv
+import math
+
+try:
+    import numpy as np
+except ImportError as exc:
+    raise SystemExit(
+        "inspect_svd_predictors.py requires NumPy. Install it with `pip install numpy`."
+    ) from exc
+
+try:
+    import matplotlib  # type: ignore
+    matplotlib.use("Agg")  # headless-safe backend
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:
+    plt = None
+
+try:
+    import pandas as pd  # type: ignore
+except Exception:
+    pd = None
+
+try:
+    import torch
+except ImportError as exc:
+    raise SystemExit(
+        "inspect_svd_predictors.py requires PyTorch. Install it with `pip install torch`."
+    ) from exc
+
+try:
+    from transformers import AutoModel
+except ImportError as exc:
+    raise SystemExit(
+        "inspect_svd_predictors.py requires Hugging Face Transformers. Install it with `pip install transformers`."
+    ) from exc
 
 try:
     from tqdm import tqdm
@@ -46,9 +73,8 @@ def rel_fro_error(W, W_hat):
     return num / denom
 
 def compute_svd(W):
-    """Compute SVD (U, s, Vh) for matrix W."""
-    U, s, Vh = svd(W, full_matrices=False)
-    return U, s, Vh
+    """Compute SVD (U, s, Vh) for matrix W using NumPy."""
+    return np.linalg.svd(W, full_matrices=False)
 
 def local_svd_reconstruction_from_svd(U, s, Vh, rank):
     """Return W_hat, A, B where W_hat = A @ B; A shape = (out, rank), B shape = (rank, in)."""
@@ -161,8 +187,8 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
 
     # random subset of W's singular components
     t0 = time.time()
-    idx = rng.permutation(len(s))[:k]
-       if k > 0:
+    if k > 0:
+        idx = rng.permutation(len(s))[:k]
         U_sub = U[:, idx]
         s_sub = s[idx]
         Vh_sub = Vh[idx, :]
@@ -209,34 +235,37 @@ def svd_vs_random_experiment(W: np.ndarray, keep_ratio: float = 0.3, out_dir: st
 
     vmax = np.max(np.abs(W)) if np.any(W) else 1.0
     cmap_choice = 'seismic' if np.any(W < 0) else 'viridis'
-    fig, axes = plt.subplots(1, 6, figsize=(18, 3))
-    ims = []
-    titles = ['original', f'svd_topk (k={k})', 'rand_svd_subspace', 'random_AB', 'leverage_cols', 'mag-prune-best']
-    mag_best = W_mag_col if rel_fro_error(W, W_mag_col) <= rel_fro_error(W, W_mag_row) else W_mag_row
-    mats = [W, W_svd_topk, W_rand_svd_sub, W_rand_AB, W_leverage, mag_best]
-    for ax, mat, title in zip(axes, mats, titles):
-        ims.append(ax.imshow(mat, aspect='auto', cmap=cmap_choice, vmin=-vmax, vmax=vmax))
-        ax.set_title(title)
-        ax.set_xticks([])
-        ax.set_yticks([])
-    plt.suptitle(f'Comparison: {safe_name}')
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.82)
-    fig.colorbar(ims[0], ax=axes.ravel().tolist(), orientation='vertical', fraction=0.02)
-    plt.savefig(os.path.join(out_dir, f"exp_{safe_name}_comparison.png"), dpi=150)
-    plt.close(fig)
+    if plt is not None:
+        fig, axes = plt.subplots(1, 6, figsize=(18, 3))
+        ims = []
+        titles = ['original', f'svd_topk (k={k})', 'rand_svd_subspace', 'random_AB', 'leverage_cols', 'mag-prune-best']
+        mag_best = W_mag_col if rel_fro_error(W, W_mag_col) <= rel_fro_error(W, W_mag_row) else W_mag_row
+        mats = [W, W_svd_topk, W_rand_svd_sub, W_rand_AB, W_leverage, mag_best]
+        for ax, mat, title in zip(axes, mats, titles):
+            ims.append(ax.imshow(mat, aspect='auto', cmap=cmap_choice, vmin=-vmax, vmax=vmax))
+            ax.set_title(title)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        plt.suptitle(f'Comparison: {safe_name}')
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.82)
+        fig.colorbar(ims[0], ax=axes.ravel().tolist(), orientation='vertical', fraction=0.02)
+        plt.savefig(os.path.join(out_dir, f"exp_{safe_name}_comparison.png"), dpi=150)
+        plt.close(fig)
 
-    # error bar chart with proper ticks
-    fig, ax = plt.subplots(figsize=(6,3))
-    names = list(err.keys())
-    vals = [err[n] for n in names]
-    ax.bar(range(len(names)), vals, color=['C0','C1','C2','C3','C4','C5'])
-    ax.set_xticks(range(len(names)))
-    ax.set_xticklabels(names, rotation=30, ha='right')
-    ax.set_ylabel('relative Frobenius error')
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, f"exp_{safe_name}_errors.png"), dpi=150)
-    plt.close(fig)
+        # error bar chart with proper ticks
+        fig, ax = plt.subplots(figsize=(6,3))
+        names = list(err.keys())
+        vals = [err[n] for n in names]
+        ax.bar(range(len(names)), vals, color=['C0','C1','C2','C3','C4','C5'])
+        ax.set_xticks(range(len(names)))
+        ax.set_xticklabels(names, rotation=30, ha='right')
+        ax.set_ylabel('relative Frobenius error')
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"exp_{safe_name}_errors.png"), dpi=150)
+        plt.close(fig)
+    else:
+        print("matplotlib not available; skipping comparison figures.")
 
     return {
         'errors': err,
@@ -391,43 +420,78 @@ def main():
         })
 
         # singular value plot
-        plt.figure(figsize=(4,3))
-        plt.semilogy(s, marker='o')
-        plt.title(sanitize_name(name))
-        plt.xlabel('i')
-        plt.ylabel('singular value (log)')
-        plt.tight_layout()
-        safe_name = sanitize_name(name)
-        plt.savefig(os.path.join(args.out_dir, f"svd_{safe_name}.png"), dpi=150)
-        plt.close()
+        if plt is not None:
+            plt.figure(figsize=(4,3))
+            plt.semilogy(s, marker='o')
+            plt.title(sanitize_name(name))
+            plt.xlabel('i')
+            plt.ylabel('singular value (log)')
+            plt.tight_layout()
+            safe_name = sanitize_name(name)
+            plt.savefig(os.path.join(args.out_dir, f"svd_{safe_name}.png"), dpi=150)
+            plt.close()
 
         last_W = W
         last_name = name
 
-    df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(args.out_dir, 'layer_reconstruction.csv'), index=False)
+    csv_path = os.path.join(args.out_dir, 'layer_reconstruction.csv')
+    if pd is not None:
+        df = pd.DataFrame(rows)
+        df.to_csv(csv_path, index=False)
+    else:
+        df = rows
+        fieldnames = sorted(rows[0].keys()) if rows else []
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
     print("Saved results to", args.out_dir)
 
     # summary statistics (mean + median) - filter out inf/NaN
-    if not df.empty:
-        cols = [c for c in ['svd_topk_err','rand_svd_subspace_err','random_AB_err','mag_best_err'] if c in df.columns]
-        if cols:
-            # coerce inf to NaN, then drop rows with NaN in these columns for summary
-            df_summary = df.copy()
-            df_summary[cols] = df_summary[cols].replace([np.inf, -np.inf], np.nan)
-            n_before = len(df_summary)
-            df_summary = df_summary.dropna(subset=cols)
-            n_after = len(df_summary)
-            n_dropped = n_before - n_after
-            if n_dropped > 0:
-                print(f"Summary: dropped {n_dropped} rows with inf/NaN in error columns before computing stats")
-            if n_after > 0:
+    cols = [c for c in ['svd_topk_err','rand_svd_subspace_err','random_AB_err','mag_best_err']]
+    if pd is not None:
+        if not df.empty:
+            existing = [c for c in cols if c in df.columns]
+            if existing:
+                df_summary = df.copy()
+                df_summary[existing] = df_summary[existing].replace([np.inf, -np.inf], np.nan)
+                n_before = len(df_summary)
+                df_summary = df_summary.dropna(subset=existing)
+                n_after = len(df_summary)
+                n_dropped = n_before - n_after
+                if n_dropped > 0:
+                    print(f"Summary: dropped {n_dropped} rows with inf/NaN in error columns before computing stats")
+                if n_after > 0:
+                    print("Mean errors:")
+                    print(df_summary[existing].mean().to_string())
+                    print("Median errors:")
+                    print(df_summary[existing].median().to_string())
+                else:
+                    print("No valid rows to summarize after filtering inf/NaN.")
+    else:
+        if df:
+            stats = {}
+            for row in df:
+                for c in cols:
+                    val = row.get(c)
+                    if val is None:
+                        continue
+                    try:
+                        fval = float(val)
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isnan(fval) or math.isinf(fval):
+                        continue
+                    stats.setdefault(c, []).append(fval)
+            if stats:
                 print("Mean errors:")
-                print(df_summary[cols].mean().to_string())
+                for c, values in stats.items():
+                    if values:
+                        print(f"{c}: {np.mean(values):.6f}")
                 print("Median errors:")
-                print(df_summary[cols].median().to_string())
-            else:
-                print("No valid rows to summarize after filtering inf/NaN.")
+                for c, values in stats.items():
+                    if values:
+                        print(f"{c}: {np.median(values):.6f}")
 
     # optionally run the detailed experiment on last or selected param
     if args.run_experiment and last_W is not None:
