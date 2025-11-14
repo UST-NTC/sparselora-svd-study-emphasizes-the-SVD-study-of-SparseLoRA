@@ -1,72 +1,100 @@
-# sparselora-svd-study-emphasizes-the-SVD-study-of-SparseLoRA
+# SparseLoRA-Inspired SVD Study — Capstone Project
 
-# SparseLoRA SVD vs Random Pruning — Experiment Plan
+This repository contains the code that accompanies the capstone project based on the paper
+[SparseLoRA: Sparsity-Aware Low-Rank Adaptation of Large Language Models](https://openreview.net/pdf?id=z83rodY0Pw).
+The goal is to help bachelor students reason through the three key empirical claims of the
+paper by progressing from controlled linear-algebra experiments to transformer weight
+inspection and, finally, to a lightweight LoRA pruning + fine-tuning loop.
 
-This repo is a SparseLoRA‑inspired study that isolates the core ideas behind the paper’s speed/accuracy trade‑offs and validates them step‑by‑step. 
-It does not claim to be a full SparseLoRA re‑implementation (no per‑token contextual gating yet). 
-Instead, it provides a clean, reproducible path from linear‑algebra facts → real model spectra → downstream pruning/finetuning that mirrors SparseLoRA’s intuition:
-•	Low rank structure exists (most energy lives in a few singular modes).
-•	A predictor/score over channels can rank what to keep.
-•	Keeping only a fraction of channels (sparsity) can preserve accuracy at much lower compute.
+The repo is intentionally compact: every experiment is a single script. Students are
+encouraged to read the paper section-by-section and then reproduce/extend the evidence with
+the corresponding phase below.
 
+## Repository layout
 
-Prerequisites
-- Python 3.9+
-- Git (optional)
-- Basic terminal knowledge (copy/paste commands).
-- Optional GPU: NVIDIA GPU 12GB vram+ with CUDA for Phase C.
-- Recommended Python packages -- numpy scipy pandas matplotlib tqdm scikit-learn torch transformers datasets peft
+| File | Purpose |
+| --- | --- |
+| `toy_experiment.py` | Synthetic matrices that isolate why SVD-based low-rank reconstruction outperforms random baselines. |
+| `inspect_svd_predictors.py` | Inspects real transformer weight matrices to confirm spectral skew and evaluate structured pruning signals. |
+| `prune_finetune_lora.py` | Applies channel-level LoRA pruning after a warm-up and measures downstream accuracy recovery. |
 
+All scripts are self-contained command-line tools with help text (`python <script>.py --help`).
 
-Quick Setup (copy/paste)
-1) Create project folder:
-   mkdir sparselora-capstone
-   cd sparselora-capstone
-   
-2) Create & activate virtualenv:
-   Linux/macOS:
-     python3 -m venv venv
-     source venv/bin/activate
-   Windows (PowerShell):
-     python -m venv venv
-     .\venv\Scripts\Activate.ps1
+## 1. Getting started
 
-3) Install packages:
-   pip install numpy scipy pandas matplotlib tqdm scikit-learn torch transformers datasets peft
+### Recommended environment
 
+* Python 3.9 or newer
+* `pip install numpy scipy pandas matplotlib tqdm scikit-learn torch transformers datasets peft`
+* GPU with ≥12 GB VRAM is strongly recommended for the LoRA fine-tuning experiment
 
-If you use GPU: follow https://pytorch.org/get-started/locally/ to install the correct torch+CUDA wheel.
+To keep runs reproducible, every script accepts a `--seed` argument and uses deterministic
+pseudo-random number generators where possible.
 
+### Quick setup
 
-Phase A — Toy experiments (fast, CPU)
-Purpose (SparseLoRA tie‑in). Validate the low‑rank energy concentration assumption and the value of an SVD‑style scoring signal. This underpins why a predictor can select a small active subset without losing much.
-What it compares per trial (for each rank k): 
-- svd_topk_err —- SVD rank‑k reconstruction (optimal low‑rank).
-- rand_svd_subspace_err —- pick k singular components at random (strong random baseline).
-- random_AB_err -— random A@B factor (weaker baseline, scaled to |W|_F).
-- leverage_col_err —- keep k columns by column energy (Σ s²·V²) → a structured proxy for importance.
-- random_colprune_err —- random k‑column subset.
-  
-Run:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
+pip install numpy scipy pandas matplotlib tqdm scikit-learn torch transformers datasets peft
+```
+
+If you have an NVIDIA GPU, follow the [PyTorch install guide](https://pytorch.org/get-started/locally/)
+for the correct CUDA wheel before installing the remaining packages.
+
+## 2. Phase A — Low-rank structure on synthetic data (`toy_experiment.py`)
+
+**Motivation from the paper.** SparseLoRA relies on the observation that most of the energy in
+adapter weights concentrates in a few singular directions. This script stress-tests that
+assumption with random Gaussian matrices where the ground truth optimum is known.
+
+**What it does.** For each requested rank `k`, the script draws matrices `W ∈ R^{n×m}`, computes:
+
+* `svd_topk_err`: optimal rank-`k` reconstruction using the leading singular vectors
+* `rand_svd_subspace_err`: reconstruction using a random subset of singular vectors (strong random baseline)
+* `random_AB_err`: factors with random `A` and `B`, scaled to match `||W||_F`
+* `leverage_col_err`: column pruning based on singular-value energy (leverage scores)
+* `random_colprune_err`: column pruning with uniformly random columns
+
+Results are written to `toy_results/` as per-trial CSVs and aggregate statistics with mean ±
+standard deviation, plus diagnostic plots.
+
+**Example run** (fast, CPU friendly):
+
+```bash
 python toy_experiment.py \
   --n 128 --m 64 \
   --ranks 8 16 32 \
   --trials 200 \
   --seed 0 \
   --outdir toy_results
-  
-Outputs: 
-- CSVs: toy_results_per_trial.csv, toy_results_agg.csv
-- Plots: rank_k_comparison.png, column_prune_comparison.png
+```
 
-Expected sanity:
-svd_topk_err  <  rand_svd_subspace_err  <  random_AB_err
-This confirms that a good importance signal (SVD/energy) beats random selection.
+**Deliverables.** Plot `rank_k_comparison.png` should verify `svd_topk_err < rand_svd_subspace_err < random_AB_err`,
+matching the hierarchy discussed in the paper. Include summary tables in your report.
+
+## 3. Phase B — Inspecting real transformer weights (`inspect_svd_predictors.py`)
+
+**Motivation from the paper.** SparseLoRA assumes real model layers remain spectrally skewed,
+so the importance signal derived from SVD (or cheap proxies) can rank channels to keep.
+**What it does.** The script iterates over every 2D weight matrix of a Hugging Face model,
+computes its SVD, and logs reconstruction errors for multiple selection rules at a user-specified
+rank:
+
+* `svd_topk_err` (oracle)
+* `rand_svd_subspace_err`
+* `random_AB_err`
+* `leverage_col_err`
+* `mag_col_err`, `mag_row_err`, `mag_best_err`
 
 
-Phase B — Real model weights (SVD vs structured/random baselines)
-Purpose (SparseLoRA tie-in). Check that real Transformer layers are spectrally skewed (few large singular values) and that SVD-top-k and energy/leverage signals beat simple baselines at the same rank k. This supports the SparseLoRA idea: keep a small, well-chosen subset with little loss.
-Run:
+Per-layer diagnostics—including singular value decay plots and timing information—are saved
+to `predictor_results/`. When `--run_experiment` is set, a heatmap comparison figure is produced
+for one layer (optionally specified via `--experiment_param`).
+
+**Example run** (takes a few minutes on CPU):
+
+```bash
 python inspect_svd_predictors.py \
   --model distilbert-base-uncased \
   --rank 8 \
@@ -76,32 +104,36 @@ python inspect_svd_predictors.py \
   --max_elems 10000000 \
   --run_experiment \
   --keep_ratio 0.3
-  
-Per-layer CSV fields (layer_reconstruction.csv):
-- Errors: svd_topk_err, rand_svd_subspace_err, random_AB_err, leverage_col_err, mag_col_err, mag_row_err, mag_best_err
-- Diagnostics: topk_energy, fro_norm, top_singular_values
-- Budgets: params_svd_topk, params_random_AB, nnz_mag_col, nnz_mag_row
-- Timings (ms): svd_ms, recon_ms, rand_sub_ms, rand_ab_ms, leverage_ms, mag_ms
-- Meta: param, shape, n, m, seed, k_used
+```
 
-Figures:
-- Singular value decay per layer: svd_<param>.png
-- Optional one-off comparison panel for a selected/last layer when --run_experiment is set.
+**Deliverables.** The CSV `layer_reconstruction.csv` contains summary rows for each matrix.
+Use it to compute overall means/medians and discuss whether the SVD-driven scores dominate
+random baselines, as predicted by the paper.
 
-Expected trends:
-- svd_topk_err < rand_svd_subspace_err ≤ random_AB_err
-- mag_*_err typically sits between SVD and random baselines. Higher topk_energy ⇒ stronger spectral concentration.
+## 4. Phase C — LoRA pruning + recovery (`prune_finetune_lora.py`)
 
+**Motivation from the paper.** SparseLoRA replaces dense adapters with a predictor that activates
+only salient channels per token. We approximate that pipeline by (a) learning LoRA adapters,
+(b) pruning them coherently, and (c) fine-tuning to recover accuracy.
 
-Phase C — LoRA adapter prune → fine-tune (GPU recommended)
-Purpose (SparseLoRA tie‑in). A static, token‑agnostic proxy for SparseLoRA’s contextual sparsity: after a short warm‑up to learn structure, we prune LoRA channels coherently across A (rows) and B (cols) using an importance signal, then continue training. This approximates “activate only the important channels”, but without dynamic per‑token gating.
-Methods (importance over rank channels k): 
-- channel_energy: importance_k = |B[:,k]|² · |A[k,:]|² (exact Frobenius of the rank‑1 component B[:,k]·A[k,:]^T)
-- magnitude_B: importance_k = |B[:,k]|² (simple baseline)
-- random: random ranking
-  
-CLI (SST‑2 only for now):
-python prune_finetune_lora-3.py \
+**What it does.**
+
+1. Attaches LoRA adapters of rank `r` to a Hugging Face classifier (default: DistilBERT on SST-2).
+2. Runs a short warm-up training phase with all channels active.
+3. Computes per-channel importances and keeps the top `keep_ratio * r` channels.
+4. Continues training with the pruned adapters.
+5. Logs accuracies, timing, and LoRA parameter counts to `lora_runs/results.csv`.
+
+Available pruning strategies:
+
+* `channel_energy` (||B[:,k]||² · ||A[k,:]||²) — rank-consistent energy proxy
+* `magnitude_B` (||B[:,k]||²) — simple baseline
+* `random`
+
+**Example run** (GPU strongly recommended):
+
+```bash
+python prune_finetune_lora.py \
   --model distilbert-base-uncased \
   --dataset glue/sst2 \
   --lora_r 8 --keep_ratio 0.5 \
@@ -113,56 +145,41 @@ python prune_finetune_lora-3.py \
   --seed 0 \
   --out_dir lora_runs
   
-Target modules. The script uses a fixed generic list of target modules: q, k, v, out, dense, fc1, fc2, classifier.
-If your model uses different names, edit this list in the script (target_modules = [...]).
+```
 
-Logged to CSV: pre/post accuracy & wall-clock, method/keep_ratio/r/seed, sample sizes, warm/post epochs. Run args are also saved to JSON. Trainable-parameter counts are printed to stdout (not CSV).
+Adjust `--target_modules` if your base model uses different attention/feed-forward names.
+The script prints matched modules and falls back to DistilBERT-specific names when needed.
 
-Why this is SparseLoRA‑flavoured. 
-  - Warm‑up ≈ lets adapter weights encode saliency first.
-  - Channel‑energy ranking ≈ a simple predictor scoring channels.
-  - Keep ratio ≈ sparsity budget (fraction of active channels).
-  - Continue training ≈ recovery after sparsification.
-  - Coherent A/B pruning = true rank‑consistent channel removal (unlike naive column‑only pruning).
-Limitation: this proxy is static (single ranking after warm‑up). SparseLoRA uses contextual (per‑token) gating driven by a learned predictor. See roadmap below.
+**Deliverables.** Report `acc_before`, `acc_after`, and `delta_acc` for each pruning strategy and
+keep ratio. Relate the accuracy/computation trade-off back to SparseLoRA’s predictor and gating
+mechanism.
 
+## 5. Suggested capstone milestones
 
-4) How this maps to the SparseLoRA paper
-Hypothesis A — Few directions matter. Phase A/B verify energy concentration and that SVD‑driven scores outperform random or magnitude.
-Hypothesis B — A predictor can choose a small active set. Phases A/B provide the ranking signals; Phase C applies them to LoRA channels.
-Sparsity vs accuracy curves. In Phase C, vary --keep_ratio (e.g., 0.25/0.5/0.75) to emulate SparseLoRA’s sparsity budget.
-Compute savings proxy. While we don’t measure runtime kernels, LoRA FLOPs scale roughly with active channels:
-FLOPs_adapter ∝ (d_in + d_out) × r_active (vs r_full).
-So keep_ratio ≈ r_active/r_full is a decent proxy for savings.
+1. **Reproduce Phase A plots** and explain why SVD provides the optimal low-rank approximation.
+2. **Analyze Phase B CSVs** to quantify spectral concentration across transformer layers.
+3. **Run Phase C sweeps** over `--keep_ratio` (e.g., 0.25/0.5/0.75) and seeds to compare pruning
+   policies.
+4. **Extend**: try different models (e.g., `bert-base-uncased`), datasets (GLUE tasks), or add
+   predictor variants (e.g., gradient-based scoring) to bridge toward the full SparseLoRA method.
 
-Metrics & Statistics
-- Reconstruction:
-  - Relative Frobenius error: ||W - W_hat||_F / ||W||_F
-- Downstream:
-  - Validation accuracy (SST-2), loss curves, steps-to-recovery
-- Efficiency:
-  - Wall-clock training time, GPU memory usage (nvidia-smi), approximate FLOPs (optional)
-- Statistical tests:
-  - For random baselines: run multiple repeats (30+), report mean ± std, use paired t-test or Wilcoxon test vs SVD results; report p-values and effect sizes.
+## 6. Reporting guidelines
 
+* Document environment details (hardware, torch/transformers versions).
+* Include the generated plots and CSV-derived tables in your final report.
+* When comparing methods, report mean ± standard deviation over multiple seeds.
+* Discuss how each experiment supports (or challenges) the hypotheses presented in the SparseLoRA paper.
+* Reflect on limitations: the scripts use static pruning, whereas SparseLoRA proposes dynamic, per-token gating.
 
-5) What’s not implemented (differences vs SparseLoRA)
-No contextual (per‑token) gating; we use a one‑time, static prune after warm‑up.
-No learned predictor networks; we use analytic energy/magnitude scores.
-No end‑to‑end FLOPs/latency measurement; we log wall‑clock time only.
-Only SST‑2 downstream task at the moment.
+## 7. Troubleshooting tips
 
+* **LoRA modules not found**: pass `--target_modules` explicitly (e.g., `q_lin,k_lin,v_lin,out_lin`).
+* **Large matrices in Phase B**: increase `--max_elems` cautiously or skip layers; consider running on GPU-enabled NumPy (`cupy`).
+* **Out-of-memory during fine-tuning**: reduce `--train_bsz`, shorten warm-up/post epochs, or sub-sample training examples.
 
-6) Roadmap to full SparseLoRA
-Add a tiny predictor head per target module; input: cheap features (e.g., token stats or low‑rank projections).
-Train predictor to match a supervision signal (e.g., gradient‑based saliency, or the energy score) and gate channels per token.
-Enforce a per‑token sparsity budget (Top‑k or threshold) and backprop through the gate (STE/relaxations).
-Log FLOPs for adapters: 2·(d_in + d_out)·r_active per token, and report throughput (seq/s).
-Expand tasks (QQP, MRPC, MNLI), models (BERT‑base, RoBERTa), and ablations (warm‑up length, r, gate budget).
-We can help sketch the predictor loss and add a minimal gating module if you want to push toward the full method.
+---
 
-
-7) TL;DR takeaways (SparseLoRA context)
-Phase A: Analytic signals (SVD/energy) reliably beat random — a core enabler for predictive gating.
-Phase B: Real layers show heavy spectral skew; top‑k captures most energy; leverage‑based selection is strong.
-Phase C: After warm‑up, rank‑consistent channel pruning with channel‑energy preserves downstream accuracy noticeably better than random and typically better than simple magnitude at the same sparsity.
+By completing all three phases you will have reproduced the qualitative trajectory of the
+SparseLoRA paper: from SVD intuition, to real-model evidence, to a practical (if simplified)
+LoRA sparsification pipeline. Use the paper’s ablation studies and theoretical arguments to
+frame your findings and propose future improvements.
