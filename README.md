@@ -30,7 +30,7 @@ All scripts are self-contained command-line tools with help text (`python <scrip
 
 * Python 3.9 or newer
 * `pip install numpy scipy pandas matplotlib tqdm scikit-learn torch transformers datasets peft`
-* GPU with ≥12 GB VRAM is strongly recommended for the LoRA fine-tuning experiment
+* Discrete GPU is recommended for the LoRA fine-tuning experiment
 
 To keep runs reproducible, every script accepts a `--seed` argument and uses deterministic
 pseudo-random number generators where possible.
