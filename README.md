@@ -183,26 +183,25 @@ mechanism.
 
 ## 5. Suggested capstone milestones
 
-1. **Reproduce Phase A plots** and explain why SVD provides the optimal low-rank approximation.
-2. **Analyze Phase B CSVs** to quantify spectral concentration across transformer layers.
-3. **Run Phase C sweeps** over `--keep_ratio` (e.g., 0.25/0.5/0.75) and seeds to compare pruning
-   policies.
-4. **Extend**: try different models (e.g., `bert-base-uncased`), datasets (GLUE tasks), or add
-   predictor variants (e.g., gradient-based scoring) to bridge toward the full SparseLoRA method.
+1. **Reproduce Phase A outputs.** Run `toy_experiment.py` and verify that it emits `toy_results_per_trial.csv`, `toy_results_agg.csv`, and the comparison plots (`rank_k_comparison.png`, `column_prune_comparison.png`). Use the aggregated CSV to confirm the ordering between `svd_topk_err` and the random baselines reported by the script’s sanity check.【F:toy_experiment.py†L40-L199】【F:toy_results/toy_results_agg.csv†L1-L7】
+2. **Summarize Phase B spectral statistics.** Execute `inspect_svd_predictors.py` on a pretrained model and analyze `predictor_results/layer_reconstruction.csv`, pairing its error/timing columns with representative singular-value figures saved in the same directory.【F:inspect_svd_predictors.py†L303-L448】【F:predictor_results/layer_reconstruction.csv†L1-L5】
+3. **Benchmark Phase C pruning strategies.** Sweep `--keep_ratio`, RNG seeds, and the available `--method` options (`channel_energy`, `magnitude_B`, `random`) in `prune_finetune_lora.py`. Each run appends a row to `lora_runs/results.csv` and updates `run_args.json`; use these artifacts to compare accuracy deltas and effective ranks.【F:prune_finetune_lora.py†L231-L401】【F:lora_runs/results.csv†L1-L5】
+4. **Extend with controlled ablations.** Modify the provided scripts to probe additional ranks, alternative importance scores (e.g., add branches in `channel_importance`), or different LoRA budgets, and document how those changes shift the recorded metrics and plots.【F:toy_experiment.py†L40-L199】【F:prune_finetune_lora.py†L120-L341】
 
 ## 6. Reporting guidelines
 
-* Document environment details (hardware, torch/transformers versions).
-* Include the generated plots and CSV-derived tables in your final report.
-* When comparing methods, report mean ± standard deviation over multiple seeds.
-* Discuss how each experiment supports (or challenges) the hypotheses presented in the SparseLoRA paper.
-* Reflect on limitations: the scripts use static pruning, whereas SparseLoRA proposes dynamic, per-token gating.
+* Document environment details (hardware, PyTorch/Transformers versions) alongside the exact CLI arguments; every script accepts a `--seed` for reproducibility.【F:toy_experiment.py†L40-L133】【F:inspect_svd_predictors.py†L300-L401】【F:prune_finetune_lora.py†L231-L401】
+* Summarize the quantitative tables from `toy_results/toy_results_agg.csv`, `predictor_results/layer_reconstruction.csv`, and `lora_runs/results.csv`, highlighting the metrics captured in each file.【F:toy_results/toy_results_agg.csv†L1-L7】【F:predictor_results/layer_reconstruction.csv†L1-L5】【F:lora_runs/results.csv†L1-L5】
+* Embed or cite the generated figures (`rank_k_comparison.png`, `column_prune_comparison.png`, per-layer SVD plots) to illustrate the observed trends.【F:toy_experiment.py†L170-L199】【F:inspect_svd_predictors.py†L422-L433】
+* When comparing methods, report mean ± standard deviation across trials/seeds using the aggregated statistics the scripts compute and relate the findings back to SparseLoRA’s hypotheses.【F:toy_experiment.py†L135-L169】【F:inspect_svd_predictors.py†L450-L493】
+* Call out limitations explicitly—e.g., Phase C currently targets GLUE/SST-2 with DistilBERT-style modules—so readers see how the setup differs from SparseLoRA’s dynamic gating.【F:prune_finetune_lora.py†L66-L304】
 
 ## 7. Troubleshooting tips
 
-* **LoRA modules not found**: pass `--target_modules` explicitly (e.g., `q_lin,k_lin,v_lin,out_lin`).
-* **Large matrices in Phase B**: increase `--max_elems` cautiously or skip layers; consider running on GPU-enabled NumPy (`cupy`).
-* **Out-of-memory during fine-tuning**: reduce `--train_bsz`, shorten warm-up/post epochs, or sub-sample training examples.
+* **LoRA modules not found**: the script first tries user-provided/generic targets and then retries with DistilBERT defaults. If both attempts fail it prints sample parameter names before raising—use that list to refine `--target_modules` or adjust `make_lora_model` so the desired modules reach PEFT.【F:prune_finetune_lora.py†L259-L299】
+* **Large matrices in Phase B**: tune `--max_layers`/`--max_elems` or skip problematic tensors; the script logs and records skipped parameters so you can justify omissions.【F:inspect_svd_predictors.py†L303-L448】
+* **Out-of-memory during fine-tuning**: lower `--train_bsz`, `--eval_bsz`, or the warm-up/post epochs, and consider subsampling with `--train_samples`/`--eval_samples` to stay within resource limits.【F:prune_finetune_lora.py†L231-L358】
+* **Different datasets**: `prune_finetune_lora.py` only maps GLUE/SST-2 today—adding new corpora requires extending `get_text_map`/`load_sst2` before switching the `--dataset` flag.【F:prune_finetune_lora.py†L66-L179】【F:prune_finetune_lora.py†L301-L304】
 
 ---
 
