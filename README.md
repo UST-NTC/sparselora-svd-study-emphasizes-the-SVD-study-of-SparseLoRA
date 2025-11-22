@@ -28,7 +28,7 @@ All scripts are self-contained command-line tools with help text (`python <scrip
 
 ### Recommended environment
 
-* Python 3.12 [Python 3.13 & 3.14 does not support pytorch]
+* Python 3.12 [Python 3.14 does not support pytorch]
 * `pip install numpy scipy pandas matplotlib tqdm scikit-learn torch transformers datasets peft`
 * Discrete GPU is recommended for the LoRA fine-tuning experiment
 
